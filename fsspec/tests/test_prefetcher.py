@@ -1018,3 +1018,22 @@ def test_close_and_aclose_idempotence(prefetcher_factory):
         assert bp2.is_stopped
 
     fsspec.asyn.sync(loop, run_aclose_twice)
+
+
+def test_small_sequential_reads_ramp_to_large_fetches(prefetcher_factory):
+    """Streaming small fixed reads (e.g. tarfile's 10 KiB) must not cost one request
+    per read: the window has to reach MIN_CHUNK_SIZE in a handful of reads, not
+    MIN_CHUNK_SIZE / io_size reads, and sub-chunk windows go out as one request."""
+    read_size = 10 * 1024
+    size = 24 * 1024 * 1024
+    data = bytes(size)
+    fetcher = MockFetcher(data)
+    bp = prefetcher_factory(fetcher=fetcher, size=size, concurrency=4)
+
+    for offset in range(0, size, read_size):
+        assert bp.fetch(offset, offset + read_size) == data[offset : offset + read_size]
+
+    # Linear growth (+io_size per read, filled in io_size pieces) issued ~1000 requests.
+    assert len(fetcher.calls) < 64
+    small = [c for c in fetcher.calls if c["size"] < bp.producer.MIN_CHUNK_SIZE]
+    assert len(small) < 16

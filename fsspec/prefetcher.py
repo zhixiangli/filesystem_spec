@@ -273,6 +273,19 @@ class PrefetchProducer:
             self.orchestrator.set_error(e)
             await self.queue.put(e)
 
+    def _ramp_multiplier(self, streak: int, io_size: int) -> int:
+        """Window size, in multiples of ``io_size``, for a sequential streak.
+
+        Growth is linear (one ``io_size`` per read) once the window spans
+        ``concurrency`` chunks. Below that it doubles per read, so small reads
+        (e.g. tarfile's 10 KiB) reach chunked fetching in ~log2(chunk / io_size)
+        reads instead of chunk / io_size reads, each costing a request.
+        """
+        steps = streak - self.MIN_STREAKS_FOR_PREFETCHING
+        linear = steps + 1
+        bound = (self.concurrency * self.MIN_CHUNK_SIZE) // max(io_size, 1)
+        return max(linear, min(1 << min(steps, 62), bound))
+
     def _calculate_prefetch_params(self) -> tuple[int, int, int]:
         """
         Evaluates current trackers and state to determine sizes.
@@ -301,7 +314,7 @@ class PrefetchProducer:
         elif streak < self.MIN_STREAKS_FOR_PREFETCHING:
             prefetch_multiplier = 1
         else:
-            prefetch_multiplier = streak - self.MIN_STREAKS_FOR_PREFETCHING + 1
+            prefetch_multiplier = self._ramp_multiplier(streak, last_read_size)
 
         if self.queue.empty() or prefetch_multiplier == 1:
             io_size = last_read_size
@@ -353,7 +366,13 @@ class PrefetchProducer:
                 else:
                     break
             else:
-                actual_size = min(io_size, space_remaining)
+                # One io_size-aligned request covers the whole free window; filling
+                # it in io_size pieces costs a request per read for small reads.
+                unit = max(io_size, 1)
+                actual_size = min(
+                    max(io_size, (prefetch_space_available // unit) * unit),
+                    space_remaining,
+                )
 
             if prefetch_space_available < actual_size:
                 if (
