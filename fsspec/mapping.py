@@ -7,6 +7,8 @@ from collections.abc import MutableMapping
 from functools import cached_property
 
 from fsspec.core import url_to_fs
+from fsspec.implementations.local import LocalFileSystem
+from fsspec.utils import _escapes_root
 
 logger = logging.getLogger("fsspec.mapping")
 _MISSING = object()
@@ -151,6 +153,13 @@ class FSMap(MutableMapping):
             if isinstance(key, list):
                 key = tuple(key)
             key = str(key)
+        # "..", like in DirFileSystem, only navigates above the root on
+        # filesystems that resolve it against a real directory tree; on object
+        # stores it is a literal key part, so only guard the local case here.
+        if isinstance(self.fs, LocalFileSystem) and _escapes_root(key):
+            raise ValueError(
+                f"key {key!r} escapes the {self.root!r} root of the mapping"
+            )
         return f"{self._root_key_to_str}{key}".rstrip("/")
 
     def _str_to_key(self, s):

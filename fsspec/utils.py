@@ -465,6 +465,19 @@ def check_contained(root: str, paths: list[str]) -> None:
             )
 
 
+def _escapes_root(path: str) -> bool:
+    """Whether a relative path would resolve above its root via ".." segments."""
+    depth = 0
+    for part in path.split("/"):
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                return True
+        elif part and part != ".":
+            depth += 1
+    return False
+
+
 def is_exception(obj: Any) -> bool:
     return isinstance(obj, BaseException)
 
